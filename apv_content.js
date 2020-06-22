@@ -24,7 +24,8 @@ const POLL_INTERVAL = 1000;
 // extract previews from URIs that match those regular expressions.
 const URI_RE_MAP = [
     { "re": new RegExp("^https?://apnews.com/[a-z0-9]{32}($|\\?|\\/)"), "func": fetch_article_preview },
-    { "re": new RegExp("^https?://apnews.com/(tag\\/)?[A-Z]"), "func": fetch_topic_preview }
+    { "re": new RegExp("^https?://apnews.com/(tag\\/)?[A-Z]"), "func": fetch_topic_preview },
+    { "re": new RegExp("^https?://apnews.com/(tag\\/)?apf-"),  "func": fetch_apf_preview   }
 ];
 // The text of all previews is initially set to this while waiting for the
 // actual preview text to fetch (or an error to occur).
@@ -153,7 +154,7 @@ function parse_article_article(art) {
  */
 function fetch_article_preview(a) {
     if(DEBUG) console.log(`APV: fetch_article_preview([ link "${a.href}" ]) called`);
-    let uri = a.href;
+    
     intralink_map[a.href] = PREVIEW_LOADING;
     a.addEventListener("mouseover", show_preview);
     a.addEventListener("mouseout",  hide_preview);
@@ -185,10 +186,12 @@ function fetch_article_preview(a) {
     });
 }
 
+/* fetch_topic_preview(a) like fetch_article_preview above, but for
+ * "Topic" pages.
+ */
 function fetch_topic_preview(a) {
     if(DEBUG) console.log(`APV: fetch_topic_preview([ link "${a.href} ]" called`);
     
-    let uri = a.href;
     intralink_map[a.href] = PREVIEW_LOADING;
     a.addEventListener("mouseover", show_preview);
     a.addEventListener("mouseout",  hide_preview);
@@ -232,6 +235,54 @@ function fetch_topic_preview(a) {
         intralink_map[a.href] = PREVIEW_ERROR;
     });
 }
+
+/* fetch_apf_preview(a) like fetch_article_preview() above, but for
+ * apf- "feed" pages.
+ */
+function fetch_apf_preview(a) {
+    if (DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href}" ]) called:`);
+
+    intralink_map[a.href] = PREVIEW_LOADING;
+    a.addEventListener("mouseover", show_preview);
+    a.addEventListener("mouseout",  hide_preview);
+    a.addEventListener("click",     hide_preview);
+
+    fetch(a.href).then(function(r) {
+        r.text().then(function(data) {
+            try {
+                let doc = PARSER.parseFromString(data, "text/html");
+                let x = doc.querySelector("div.Body h1[data-key='hub-title']");
+                let topic_title = x.textContent;
+                
+                x = doc.querySelectorAll("article div.FeedCard");
+                let i = 0;
+                let chunks = [];
+                for(let summary of x) {
+                    if (i == TOPIC_HEADLINES) { break; }
+                    let headline = summary.querySelector("div.CardHeadline a h1");
+                    if (headline) {
+                        chunks.push(`<li>${headline.textContent}</li>`);
+                        i++;
+                    }
+                }
+                
+                let preview_text = `<h3>Feed: ${topic_title}</h3>\n<ul>${chunks.join("\n")}</ul>`;
+                intralink_map[a.href] = preview_text;
+                if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]) successful`);
+            } catch(err) {
+                if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]) err'd: ${err}`);
+                intralink_map[a.href] = PREVIEW_ERROR;
+            }
+        }).catch(function(err) {
+            if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]): Error parsing resource text: ${err}`);
+            intralink_map[a.href] = PREVIEW_ERROR;
+        });
+    }).catch(function(err) {
+        if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]): Error fetching resource: ${err}`);
+        intralink_map[a.href] = PREVIEW_ERROR;
+    });
+}
+                
 
 /* scan_for_intralinks() searches through the "Article" <DIV> on the current
  * page for <A> elements whose .href attributes match regular expressions

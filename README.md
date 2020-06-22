@@ -24,7 +24,7 @@ Mode. Click "Load unpacked" and choose the directory containing this repo.
 
 AP News serves pages in several different formats; as of 2020-06-22,
 `associated_preview` recognizes two different kinds of pages on which it
-scans for interlinks, and three different kids of pages for which it will
+scans for interlinks, and four different kids of pages for which it will
 generate previews. The logic for differentiating
 between them and extracting the previews is brittle and will almost certainly
 fail if AP News starts changing the format of what it serves. Please, if
