@@ -1,0 +1,27 @@
+/* style.css
+ * 
+ * Associated Preview stylesheet
+ * 
+ * 2020-06-16
+ */
+
+div#apv_preview {
+    z-index: 10;
+    display: none; /* inline-block; */
+    position: fixed;
+    max-width: 50vw; max-height: 50vh;
+    width: 40em; height: 20em;
+    
+    background-color: white;
+    border: 1px solid #2c2c2c;
+    color: #2c2c2c;
+    padding: 1em;
+}
+
+div#apv_preview h3 {
+    font-family: GoodOT-Cond,Arial Narrow,Arial,sans-serif;
+}
+div#apv_preview p {
+    margin-top: 1em;
+    font-family: 'FreightText', Georgia, serif;
+}
