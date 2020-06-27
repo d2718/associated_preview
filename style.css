@@ -20,6 +20,7 @@ div#apv_preview {
 }
 
 div#apv_preview h3 {
+    margin-top: 0; padding-top: 0;
     font-family: GoodOT-Cond,Arial Narrow,Arial,sans-serif;
 }
 div#apv_preview p {

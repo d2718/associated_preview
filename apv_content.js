@@ -12,6 +12,12 @@ const DEBUG = true;
 const ARTICLE_PARAGRAPHS = 2;
 // Number of topic headlines to load for topic previews.
 const TOPIC_HEADLINES = 5;
+// Number of milliseconds after which each type of cached resource expires.
+const CACHE_AGE = {
+    "article": 1000 * 3600 * 24,    // 24 hours
+    "topic":   1000 * 3600 * 4,     // 4 hours
+    "feed":    1000 * 3600 * 4      // 4 hours
+};
 
 // Our script waits until SCRIPT_ROOT is done before it fires.
 const SCRIPT_ROOT = new RegExp("^https://apnews.com/dist/index\.js");
@@ -19,13 +25,15 @@ const SCRIPT_ROOT = new RegExp("^https://apnews.com/dist/index\.js");
 // Time in milliseconds to wait between checks to see if the URI has changed.
 const POLL_INTERVAL = 1000;
 
+const STORAGE = chrome.storage.local;
+
 // Previews for different types of pages require different methods to
 // extract. This Array pairs regular expressions with the functions that
 // extract previews from URIs that match those regular expressions.
 const URI_RE_MAP = [
-    { "re": new RegExp("^https?://apnews.com/[a-z0-9]{32}($|\\?|\\/)"), "func": fetch_article_preview },
-    { "re": new RegExp("^https?://apnews.com/(tag\\/)?[A-Z]"), "func": fetch_topic_preview },
-    { "re": new RegExp("^https?://apnews.com/(tag\\/)?apf-"),  "func": fetch_apf_preview   }
+    { "re": new RegExp("^https?://apnews.com/[a-z0-9]{32}($|\\?|\\/)"), "type": "article" },
+    { "re": new RegExp("^https?://apnews.com/(tag\\/)?[A-Z]"), "type": "topic" },
+    { "re": new RegExp("^https?://apnews.com/(tag\\/)?apf"),  "type": "feed"  }
 ];
 // The text of all previews is initially set to this while waiting for the
 // actual preview text to fetch (or an error to occur).
@@ -103,186 +111,178 @@ function get_index_script() {
     }
 }
 
-/* parse_wirestory_article() parses the DOM of an article resource
- * WITHOUT an <article> tag to generate a preview.
+/* EXTRACT_PREVIEW is a map from URI types to functions that will extract the
+ * appropriate information from their DOMs and return a preview.
  */
-function parse_wirestory_article(doc) {
-    if(DEBUG) console.log("APV: parse_wirestory_article() called");
-    let x = doc.querySelector("div.CardHeadline div h1");
-    let title_text = x.textContent;
-    
-    x = doc.querySelector("div.Article").getElementsByTagName("p");
-    let i = 0;
-    let chunks = [];
-    for(let p of x) {
-        if (i == ARTICLE_PARAGRAPHS) break;
-        if (NON_SPACE_RE.test(p.textContent)) {
-            chunks.push(`<p>${p.textContent}</p>`);
-            i++;
+const EXTRACT_PREVIEW = {
+    "article": function(doc) {
+        if(DEBUG) console.log("APV: PARSE_FOR_PREVIEW['article']() called");
+        
+        let title_text = undefined;
+        let date_text  = "";
+        let paragraphs = undefined;
+        let art = doc.querySelector("article");
+        if (art) {
+            if(DEBUG) console.log("APV: PARSE_FOR_PREVIEW['article'](): article has <ARTICLE> tag");
+            let x = art.querySelector("div[class^='headline']");
+            title_text = x.textContent;
+            paragraphs = art.getElementsByTagName("p");
+        } else {
+            let art_div = doc.querySelector("div.Article");
+            if (art_div) {
+                if(DEBUG) console.log("APV: PARSE_FOR_PREVIEW['article'](): article has div.Article element");
+                paragraphs = art_div.getElementsByTagName("p");
+                title_text = doc.querySelector("div.CardHeadline div h1").textContent;
+                date_text = doc.querySelector("div.CardHeadline div span.Timestamp").textContent;
+                date_text = "<p class='date'>" + date_text + "</p>";
+            } else {
+                if(DEBUG) console.log("APV: PARSE_FOR_PREVIEW['article'](): no recognizable article element");
+                throw Error("Article has no <ARTICLE> or <DIV class='Article'> element.");
+            }
         }
-    }
+        
+        let chunks = [];
+        let i = 0;
+        for (let p of paragraphs) {
+            if (i == ARTICLE_PARAGRAPHS) break;
+            if (NON_SPACE_RE.test(p.textContent)) {
+                chunks.push(`<p>${p.textContent}</p>`);
+                i++;
+            }
+        }
+        
+        return `<h3>${title_text}</h3>\n${date_text}\n${chunks.join("\n")}`;
+    },
     
-    return `<h3>${title_text}</h3>\n${chunks.join("\n")}`;
+    "topic": function(doc) {
+        if(DEBUG) console.log("APV: PARSE_FOR_PREVIEW['topic']() called");
+        
+        let x = doc.querySelector("h1[data-key='hub-title']");
+        let topic_title = x.textContent;
+        let topic_desc = "";
+        if (x.nextElementSibling) {
+            topic_desc = `<p>${x.nextElementSibling.textContent}</p>`;
+        }
+        
+        let feed = doc.querySelectorAll("article div.FeedCard");
+        let chunks = [];
+        let i = 0;
+        for (let d of feed) {
+            if (i == TOPIC_HEADLINES) break;
+            let headline = d.querySelector("div.CardHeadline h1");
+            if (headline) {
+                chunks.push(`<li>${headline.textContent}</li>`);
+                i++;
+            }
+        }
+        
+        return `<h3>TOPIC: ${topic_title}</h3>\n${topic_desc}\n<ul>${chunks.join("\n")}</ul>`;
+    },
+    
+    "feed": function(doc) {
+        if(DEBUG) console.log("APV: PARSE_FOR_PREVIEW['topic']() called");
+        
+        let x = doc.querySelector("div.Body h1[data-key='hub-title']");
+        let feed_title = x.textContent;
+        
+        x = doc.querySelectorAll("article div.FeedCard");
+        let chunks = [];
+        let i = 0;
+        for (let d of x) {
+            if (i == TOPIC_HEADLINES) break;
+            let headline = d.querySelector("div.CardHeadline a h1");
+            if (headline) {
+                chunks.push(`<li>${headline.textContent}</li>`);
+                i++;
+            }
+        }
+        
+        return `<h3>FEED: ${feed_title}</h3>\n<ul>${chunks.join("\n")}</ul>`;
+    }
 }
 
-/* parse_article_article() parses the <article> element of an article
- * resource that DOES (obviously) have an <article> element in order to
- * generate a preview.
+/* fetch_uri(a, typ) fetches the URI pointed to by <A>, parses it into a
+ * DOM, then calls the appropriate function to extract the preview of
+ * that resource, based on the given typ.
+ * 
+ * If successful, sets the preview text and caches the result; otherwise
+ * sets the preview text for the given URI to PREVIEW_ERROR.
  */
-function parse_article_article(art) {
-    if(DEBUG) console.log("APV: parse_article_article() called");
-    let x = art.querySelector("div[class^='headline']");
-    let title_text = x.textContent;
+function fetch_uri(a, typ) {
+    if(DEBUG) console.log(`APV: fetch_uri([ link "${a.href}" ], ${typ}) called`);
     
-    x = art.getElementsByTagName("p");
-    let i = 0;
-    let chunks = [];
-    for(let p of x) {
-        if (i == ARTICLE_PARAGRAPHS) break;
-        if (NON_SPACE_RE.test(p.textContent)) {
-            chunks.push(`<p>${p.textContent}</p>`);
-            i++;
-        }
-    }
-    
-    return `<h3>${title_text}</h3>\n${chunks.join("\n")}`;
+    fetch(a.href).then(function(resp) {
+        resp.text().then(function(data) {
+            try {
+                let doc = PARSER.parseFromString(data, "text/html");
+                let prev_text = EXTRACT_PREVIEW[typ](doc);
+                intralink_map[a.href] = prev_text;
+                let cache_ent = {
+                    "prev": prev_text,
+                    "exp": Date.now() + CACHE_AGE[typ]
+                };
+                STORAGE.set({[a.href]: cache_ent},
+                    function() {
+                        let err = chrome.runtime.lastError;
+                        if (err) {
+                            if (DEBUG) console.log(`APV: fetch_uri([ link "${a.href}" ], ${typ}): Error caching URI: ${err}`);
+                        } else {
+                            console.log(`APV: fetch_uri([ link "${a.href}" ], ${typ}): URI cached successfully.`);
+                        }
+                    }
+                );
+                if(DEBUG) console.log(`APV: fetch_uri([ link "${a.href}", ${typ}) Successful`);
+            } catch(err) {
+                if(DEBUG) console.log(`APV: fetch_uri([ link "${a.href}", ${typ}) caught error: ${err}`);
+                intralink_map[a.href] = PREVIEW_ERROR;
+            }
+        }).catch(function(err) {
+            if(DEBUG) console.log(`APV: fetch_uri([ link "${a.href}", ${typ}): Error parsing resource text: ${err}`);
+            intralink_map[a.href] = PREVIEW_ERROR;
+        });
+    }).catch(function(err) {
+        if(DEBUG) console.log(`APV: fetch_uri([ link "${a.href}", ${typ}): Error fetching resource: ${err}`);
+        intralink_map[a.href] = PREVIEW_ERROR;
+    });
 }
 
-/* fetch_article_preview(a) fetches the article to generate the preview
- * text for the supplied <A> element and adds the appropriate event handlers
- * to display it (but in the opposite order).
+/* assign_preivew(a, typ) sets <A> tag a to display the appropriate preivew
+ * when moused-over.
+ *  * Add event handlers to a.
+ *  * Check cache for non-expired preview and associate that if it exists,
+ *    otherwise call the function to fetch and parse the appropriate URI
+ *    and set the preview.
  */
-function fetch_article_preview(a) {
-    if(DEBUG) console.log(`APV: fetch_article_preview([ link "${a.href}" ]) called`);
-    
+function assign_preview(a, typ) {
+    if(DEBUG) console.log(`APV: assign_preview([ link "${a.href}" ], ${typ}) called`);
+
     intralink_map[a.href] = PREVIEW_LOADING;
     a.addEventListener("mouseover", show_preview);
     a.addEventListener("mouseout",  hide_preview);
     a.addEventListener("click",     hide_preview);
     
-    fetch(a.href).then(function (r) {
-        r.text().then(function(data) {
-            try {
-                let doc = PARSER.parseFromString(data, "text/html");
-                let art = doc.getElementsByTagName("Article")[0];
-                if (art) {
-                    intralink_map[a.href] = parse_article_article(art);
-                } else {
-                    intralink_map[a.href] = parse_wirestory_article(doc);
-                }
-                if(DEBUG) console.log(`APV: fetch_article_preview([ link "${a.href}"]) successful`);
+    STORAGE.get(a.href,
+        function(cached) {
+            let err = chrome.runtime.lastError;
+            if (err) {
+                if (DEBUG) console.log(`APV: getting "${a.href}" from cache threw error: ${err}`);
+                intralink_map[a.href] = PREVIEW_ERROR;
                 return;
-            } catch(err) {
-                if(DEBUG) console.log(`APV: fetch_article_preview([ link "${a.href}"]) err'd: ${err}`);
-                intralink_map[a.href] = PREVIEW_ERROR;
             }
-        }).catch(function(err) {
-            if(DEBUG) console.log(`APV: fetch_article_preview([ link "${a.href}"]): Error parsing resource text: ${err}`);
-            intralink_map[a.href] = PREVIEW_ERROR;
-        });
-    }).catch(function(err) {
-        if(DEBUG) console.log(`APV: fetch_article_preview([ link "${a.href}"]): Error fetching resource: ${err}`);
-        intralink_map[a.href] = PREVIEW_ERROR
-    });
-}
-
-/* fetch_topic_preview(a) like fetch_article_preview above, but for
- * "Topic" pages.
- */
-function fetch_topic_preview(a) {
-    if(DEBUG) console.log(`APV: fetch_topic_preview([ link "${a.href} ]" called`);
-    
-    intralink_map[a.href] = PREVIEW_LOADING;
-    a.addEventListener("mouseover", show_preview);
-    a.addEventListener("mouseout",  hide_preview);
-    a.addEventListener("click",     hide_preview);
-    
-    fetch(a.href).then(function(r) {
-        r.text().then(function(data) {
-            try {
-                let doc = PARSER.parseFromString(data, "text/html");
-                let x = doc.querySelector("h1[data-key='hub-title']");
-                let topic_title = x.textContent;
-                x = x.nextElementSibling;
-                let topic_desc = x.textContent;
-                
-                let art_elt = doc.getElementsByTagName("article")[0];
-                let feed = art_elt.querySelectorAll("div.FeedCard");
-                let i = 0;
-                let chunks = []
-                for (let summary of feed) {
-                    if (i == TOPIC_HEADLINES) { break; }
-                    let headline = summary.querySelector("div.CardHeadline h1");
-                    if (headline) {
-                        chunks.push(`<li>${headline.textContent}</li>`);
-                        i++;
-                    }
+            if (cached[a.href]) {
+                if (DEBUG) console.log(`APV: assign_preview([ link "${a.href}" ]): found cached preview`);
+                let ent = cached[a.href];
+                if (Date.now() < ent.exp) {
+                    console.log(`APV: assign_preview([ link "${a.href}" ]): cache unexpired; setting preview to cached value`);
+                    intralink_map[a.href] = ent.prev;
+                    return;
                 }
-                
-                let preview_text = `<h3>Topic: ${topic_title}</h3>\n<p>${topic_desc}</p>\n<ul>${chunks.join("\n")}</ul>`;
-                intralink_map[a.href] = preview_text;
-                if(DEBUG) console.log(`APV: fetch_topic_preview([ link "${a.href} ]) successful`);
-            } catch(err) {
-                if(DEBUG) console.log(`APV: fetch_topic_preview([ link "${a.href} ]) err'd: ${err}`);
-                intralink_map[a.href] = PREVIEW_ERROR;
             }
-        }).catch(function(err) {
-            if(DEBUG) console.log(`APV: fetch_topic_preview([ link "${a.href} ]): Error parsing resource text: ${err}`);
-            intralink_map[a.href] = PREVIEW_ERROR;
-        });
-    }).catch(function(err) {
-        if(DEBUG) console.log(`APV: fetch_topic_preview([ link "${a.href} ]): Error fetching resource: ${err}`);
-        intralink_map[a.href] = PREVIEW_ERROR;
-    });
+            if(DEBUG) console.log(`APV: assign_preview([ link "${a.href}" ]): no unexpired cached preview`);
+            fetch_uri(a, typ);
+        }
+    );
 }
-
-/* fetch_apf_preview(a) like fetch_article_preview() above, but for
- * apf- "feed" pages.
- */
-function fetch_apf_preview(a) {
-    if (DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href}" ]) called:`);
-
-    intralink_map[a.href] = PREVIEW_LOADING;
-    a.addEventListener("mouseover", show_preview);
-    a.addEventListener("mouseout",  hide_preview);
-    a.addEventListener("click",     hide_preview);
-
-    fetch(a.href).then(function(r) {
-        r.text().then(function(data) {
-            try {
-                let doc = PARSER.parseFromString(data, "text/html");
-                let x = doc.querySelector("div.Body h1[data-key='hub-title']");
-                let topic_title = x.textContent;
-                
-                x = doc.querySelectorAll("article div.FeedCard");
-                let i = 0;
-                let chunks = [];
-                for(let summary of x) {
-                    if (i == TOPIC_HEADLINES) { break; }
-                    let headline = summary.querySelector("div.CardHeadline a h1");
-                    if (headline) {
-                        chunks.push(`<li>${headline.textContent}</li>`);
-                        i++;
-                    }
-                }
-                
-                let preview_text = `<h3>Feed: ${topic_title}</h3>\n<ul>${chunks.join("\n")}</ul>`;
-                intralink_map[a.href] = preview_text;
-                if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]) successful`);
-            } catch(err) {
-                if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]) err'd: ${err}`);
-                intralink_map[a.href] = PREVIEW_ERROR;
-            }
-        }).catch(function(err) {
-            if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]): Error parsing resource text: ${err}`);
-            intralink_map[a.href] = PREVIEW_ERROR;
-        });
-    }).catch(function(err) {
-        if(DEBUG) console.log(`APV: fetch_apf_preview([ link "${a.href} ]): Error fetching resource: ${err}`);
-        intralink_map[a.href] = PREVIEW_ERROR;
-    });
-}
-                
 
 /* scan_for_intralinks() searches through the "Article" <DIV> on the current
  * page for <A> elements whose .href attributes match regular expressions
@@ -291,7 +291,7 @@ function fetch_apf_preview(a) {
  */
 function scan_for_intralinks() {
     if(DEBUG) console.log("APV: scan_for_intralinks() called");
-    let art_div = document.getElementsByClassName("Article")[0];
+    let art_div = document.querySelector("div.Article");
     if (!art_div) {
         if(DEBUG) console.log("APV: scan_for_intralinks(): no div.Article");
         art_div = document.getElementsByTagName("article")[0];
@@ -300,7 +300,7 @@ function scan_for_intralinks() {
         for (let a of art_div.getElementsByTagName("a")) {
             for (let refp of URI_RE_MAP) {
                 if (refp.re.test(a.href)) {
-                    refp.func(a);
+                    assign_preview(a, refp.type);
                     break;
                 }
             }

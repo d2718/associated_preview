@@ -41,3 +41,8 @@ headlines written out, and often include a picture or some article text
 as well, providing a little more of a clue about the content of the
 target article. Also, limiting the number of previews fetched per page
 makes the extension both faster to run and a more polite netizen.
+
+### Known Issues
+
+ * Script doesn't properly work on pages opened with "open link in new tab"
+   context menu item.

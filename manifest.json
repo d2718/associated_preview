@@ -1,0 +1,29 @@
+{
+    "manifest_version": 2,
+    
+    "name":        "Associated Preview",
+    "version":     "0.1",
+    "description": "Provide pop-up article previews on linked AP News website articles.",
+    
+    "permissions": [ "storage" ],
+
+    "icons": {
+        "16": "images/apv_logo_16.png",
+        "32": "images/apv_logo_32.png",
+        "48": "images/apv_logo_48.png",
+        "128": "images/apv_logo_128.png"
+    },
+    
+    "browser_action": {
+        "default_popup": "apv_popup.html"
+    },
+    
+    "content_scripts": [
+        {
+            "matches":  [ "*://apnews.com/*" ],
+            "css":      [ "style.css" ],
+            "js":       [ "apv_content.js" ],
+            "run_at":   "document_end"
+        }
+    ]
+}
